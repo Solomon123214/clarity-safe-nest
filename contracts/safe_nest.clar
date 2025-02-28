@@ -18,6 +18,7 @@
 (define-constant err-withdrawal-exists (err u106))
 (define-constant err-withdrawal-not-found (err u107))
 (define-constant err-already-signed (err u108))
+(define-constant err-max-signatures (err u109))
 
 ;; Data Variables
 (define-data-var time-lock uint u0)
@@ -70,20 +71,17 @@
         (current-balance (default-to u0 (map-get? balances tx-sender)))
         (withdrawal-id (var-get withdrawal-nonce))
     )
-    (if (and
-            (validate-time-lock)
-            (>= current-balance amount)
-            (<= amount (var-get withdrawal-limit))
+    (begin
+        (asserts! (validate-time-lock) err-time-locked)
+        (asserts! (>= current-balance amount) err-insufficient-balance)
+        (asserts! (<= amount (var-get withdrawal-limit)) err-invalid-amount)
+        
+        (map-set pending-withdrawals 
+            {id: withdrawal-id}
+            {amount: amount, recipient: tx-sender, signatures: (list)}
         )
-        (begin
-            (map-set pending-withdrawals 
-                {id: withdrawal-id}
-                {amount: amount, recipient: tx-sender, signatures: (list)}
-            )
-            (var-set withdrawal-nonce (+ withdrawal-id u1))
-            (ok withdrawal-id)
-        )
-        err-insufficient-balance
+        (var-set withdrawal-nonce (+ withdrawal-id u1))
+        (ok withdrawal-id)
     ))
 )
 
@@ -92,13 +90,17 @@
         (withdrawal (unwrap! (map-get? pending-withdrawals {id: withdrawal-id}) err-withdrawal-not-found))
     )
     (begin
+        (asserts! (validate-time-lock) err-time-locked)
         (try! (has-signed withdrawal-id tx-sender))
         (asserts! (check-authorization tx-sender) err-not-authorized)
+        (asserts! (< (len (get signatures withdrawal)) u10) err-max-signatures)
+        
         (map-set pending-withdrawals
             {id: withdrawal-id}
-            (merge withdrawal {signatures: (unwrap! (as-max-len? (append (get signatures withdrawal) tx-sender) u10) err-not-authorized)})
+            (merge withdrawal {signatures: (append (get signatures withdrawal) tx-sender)})
         )
-        (if (>= (len (get signatures withdrawal)) (var-get required-signatures))
+        
+        (if (>= (+ (len (get signatures withdrawal)) u1) (var-get required-signatures))
             (begin
                 (try! (withdraw (get amount withdrawal) (get recipient withdrawal)))
                 (map-delete pending-withdrawals {id: withdrawal-id})
@@ -114,31 +116,34 @@
         (current-balance (default-to u0 (map-get? balances recipient)))
     )
     (begin
+        (asserts! (>= current-balance amount) err-insufficient-balance)
         (map-set balances recipient (- current-balance amount))
         (ok true)
     ))
 )
 
 (define-public (add-signer (new-signer principal))
-    (if (is-eq tx-sender contract-owner)
-        (if (default-to false (map-get? signers new-signer))
-            err-signer-exists
-            (begin
-                (map-set signers new-signer true)
-                (ok true)
-            )
-        )
-        err-owner-only
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (is-none (map-get? signers new-signer)) err-signer-exists)
+        (map-set signers new-signer true)
+        (ok true)
     )
 )
 
-;; [Previous functions remain unchanged...]
-
-;; New Read Only Functions
+;; Read Only Functions
 (define-read-only (get-pending-withdrawal (withdrawal-id uint))
     (ok (map-get? pending-withdrawals {id: withdrawal-id}))
 )
 
 (define-read-only (get-required-signatures)
     (ok (var-get required-signatures))
+)
+
+(define-read-only (get-balance (user principal))
+    (ok (default-to u0 (map-get? balances user)))
+)
+
+(define-read-only (get-time-lock-status)
+    (ok (validate-time-lock))
 )
