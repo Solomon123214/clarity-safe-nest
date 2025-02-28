@@ -7,8 +7,6 @@ import {
 } from 'https://deno.land/x/clarinet@v1.0.0/index.ts';
 import { assertEquals } from 'https://deno.land/std@0.90.0/testing/asserts.ts';
 
-// [Previous tests remain unchanged...]
-
 Clarinet.test({
     name: "Test multi-signature withdrawal process",
     async fn(chain: Chain, accounts: Map<string, Account>) {
@@ -31,6 +29,15 @@ Clarinet.test({
         
         setupBlock.receipts.map(receipt => receipt.result.expectOk());
         
+        // Verify initial balance
+        let initialBalance = chain.mineBlock([
+            Tx.contractCall('safe-nest', 'get-balance', [
+                types.principal(wallet1.address)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(initialBalance.receipts[0].result.expectOk(), types.uint(1000));
+        
         // Initiate withdrawal
         let initiateBlock = chain.mineBlock([
             Tx.contractCall('safe-nest', 'initiate-withdrawal', [
@@ -52,13 +59,13 @@ Clarinet.test({
         
         signBlock.receipts[1].result.expectOk().expectBool(true);
         
-        // Verify withdrawal completed
-        let balanceBlock = chain.mineBlock([
+        // Verify final balance
+        let finalBalance = chain.mineBlock([
             Tx.contractCall('safe-nest', 'get-balance', [
                 types.principal(wallet1.address)
             ], deployer.address)
         ]);
         
-        assertEquals(balanceBlock.receipts[0].result.expectOk(), types.uint(500));
+        assertEquals(finalBalance.receipts[0].result.expectOk(), types.uint(500));
     }
 });
