@@ -19,6 +19,8 @@
 (define-constant err-withdrawal-not-found (err u107))
 (define-constant err-already-signed (err u108))
 (define-constant err-max-signatures (err u109))
+(define-constant err-zero-address (err u110))
+(define-constant err-expired-request (err u111))
 
 ;; Data Variables
 (define-data-var time-lock uint u0)
@@ -26,11 +28,20 @@
 (define-data-var withdrawal-limit uint u0)
 (define-data-var emergency-address principal contract-owner)
 (define-data-var withdrawal-nonce uint u0)
+(define-data-var max-pending-withdrawals uint u100)
 
 ;; Data Maps
 (define-map balances principal uint)
 (define-map signers principal bool)
-(define-map pending-withdrawals {id: uint} {amount: uint, recipient: principal, signatures: (list 10 principal)})
+(define-map pending-withdrawals 
+    {id: uint} 
+    {
+        amount: uint, 
+        recipient: principal, 
+        signatures: (list 10 principal),
+        expiration: uint
+    }
+)
 (define-map allowances {owner: principal, spender: principal} uint)
 
 ;; Private Functions
@@ -52,17 +63,25 @@
     )
 )
 
+(define-private (validate-withdrawal-request (withdrawal-id uint))
+    (match (map-get? pending-withdrawals {id: withdrawal-id})
+        withdrawal (begin
+            (asserts! (< block-height (get expiration withdrawal)) err-expired-request)
+            (ok withdrawal)
+        )
+        err-withdrawal-not-found
+    )
+)
+
 ;; Public Functions
 (define-public (deposit (amount uint))
     (let (
         (current-balance (default-to u0 (map-get? balances tx-sender)))
     )
-    (if (> amount u0)
-        (begin
-            (map-set balances tx-sender (+ current-balance amount))
-            (ok true)
-        )
-        err-invalid-amount
+    (begin
+        (asserts! (> amount u0) err-invalid-amount)
+        (map-set balances tx-sender (+ current-balance amount))
+        (ok true)
     ))
 )
 
@@ -73,24 +92,40 @@
     )
     (begin
         (asserts! (validate-time-lock) err-time-locked)
+        (asserts! (> amount u0) err-invalid-amount)
         (asserts! (>= current-balance amount) err-insufficient-balance)
         (asserts! (<= amount (var-get withdrawal-limit)) err-invalid-amount)
         
         (map-set pending-withdrawals 
             {id: withdrawal-id}
-            {amount: amount, recipient: tx-sender, signatures: (list)}
+            {
+                amount: amount, 
+                recipient: tx-sender, 
+                signatures: (list),
+                expiration: (+ block-height u144)  ;; 24 hour expiration
+            }
         )
         (var-set withdrawal-nonce (+ withdrawal-id u1))
         (ok withdrawal-id)
     ))
 )
 
-(define-public (sign-withdrawal (withdrawal-id uint))
+(define-public (cancel-withdrawal (withdrawal-id uint))
     (let (
-        (withdrawal (unwrap! (map-get? pending-withdrawals {id: withdrawal-id}) err-withdrawal-not-found))
+        (withdrawal (try! (validate-withdrawal-request withdrawal-id)))
     )
     (begin
-        (asserts! (validate-time-lock) err-time-locked)
+        (asserts! (is-eq tx-sender (get recipient withdrawal)) err-not-authorized)
+        (map-delete pending-withdrawals {id: withdrawal-id})
+        (ok true)
+    ))
+)
+
+(define-public (sign-withdrawal (withdrawal-id uint))
+    (let (
+        (withdrawal (try! (validate-withdrawal-request withdrawal-id)))
+    )
+    (begin
         (try! (has-signed withdrawal-id tx-sender))
         (asserts! (check-authorization tx-sender) err-not-authorized)
         (asserts! (< (len (get signatures withdrawal)) u10) err-max-signatures)
@@ -102,7 +137,7 @@
         
         (if (>= (+ (len (get signatures withdrawal)) u1) (var-get required-signatures))
             (begin
-                (try! (withdraw (get amount withdrawal) (get recipient withdrawal)))
+                (try! (withdraw withdrawal-id))
                 (map-delete pending-withdrawals {id: withdrawal-id})
                 (ok true)
             )
@@ -111,8 +146,11 @@
     ))
 )
 
-(define-private (withdraw (amount uint) (recipient principal))
+(define-private (withdraw (withdrawal-id uint))
     (let (
+        (withdrawal (unwrap! (map-get? pending-withdrawals {id: withdrawal-id}) err-withdrawal-not-found))
+        (recipient (get recipient withdrawal))
+        (amount (get amount withdrawal))
         (current-balance (default-to u0 (map-get? balances recipient)))
     )
     (begin
@@ -125,6 +163,7 @@
 (define-public (add-signer (new-signer principal))
     (begin
         (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (not (is-eq new-signer contract-owner)) err-zero-address)
         (asserts! (is-none (map-get? signers new-signer)) err-signer-exists)
         (map-set signers new-signer true)
         (ok true)
