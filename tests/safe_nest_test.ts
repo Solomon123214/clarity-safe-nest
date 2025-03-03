@@ -1,9 +1,9 @@
 import {
-  Clarinet,
-  Tx,
-  Chain,
-  Account,
-  types
+    Clarinet,
+    Tx,
+    Chain,
+    Account,
+    types
 } from 'https://deno.land/x/clarinet@v1.0.0/index.ts';
 import { assertEquals } from 'https://deno.land/std@0.90.0/testing/asserts.ts';
 
@@ -38,6 +38,15 @@ Clarinet.test({
         
         assertEquals(initialBalance.receipts[0].result.expectOk(), types.uint(1000));
         
+        // Test zero amount deposit (should fail)
+        let zeroDeposit = chain.mineBlock([
+            Tx.contractCall('safe-nest', 'deposit', [
+                types.uint(0)
+            ], wallet1.address)
+        ]);
+        
+        zeroDeposit.receipts[0].result.expectErr(types.uint(104));
+        
         // Initiate withdrawal
         let initiateBlock = chain.mineBlock([
             Tx.contractCall('safe-nest', 'initiate-withdrawal', [
@@ -67,5 +76,22 @@ Clarinet.test({
         ]);
         
         assertEquals(finalBalance.receipts[0].result.expectOk(), types.uint(500));
+        
+        // Test withdrawal cancellation
+        let newWithdrawal = chain.mineBlock([
+            Tx.contractCall('safe-nest', 'initiate-withdrawal', [
+                types.uint(100)
+            ], wallet1.address)
+        ]);
+        
+        const newWithdrawalId = newWithdrawal.receipts[0].result.expectOk();
+        
+        let cancelBlock = chain.mineBlock([
+            Tx.contractCall('safe-nest', 'cancel-withdrawal', [
+                newWithdrawalId
+            ], wallet1.address)
+        ]);
+        
+        cancelBlock.receipts[0].result.expectOk().expectBool(true);
     }
 });
